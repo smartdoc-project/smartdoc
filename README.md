@@ -10,71 +10,59 @@ SmartDoc s'adresse à des organisations qui numérisent et archivent des documen
 
 Le service reçoit une image dans Azure Blob Storage, la valide, déclenche automatiquement son traitement par un modèle de Deep Learning, conserve les résultats et actualise un tableau de bord. Il est déployé sur Microsoft Azure, avec une architecture événementielle, des reprises automatiques, de l'observabilité et un pipeline CI/CD.
 
-Deux modèles seront développés et entraînés par l'équipe :
+L'équipe développe et entraîne un seul modèle : un autoencodeur (AE) convolutionnel. L'encodeur réduit l'image à une représentation compacte, appelée latent. Le décodeur reconstruit l'image propre à partir du latent.
 
-- **Autoencoder (AE)** : représentation latente déterministe.
-- **Variational Autoencoder (VAE)** : représentation latente probabiliste.
-
-La question expérimentale est la suivante : comment la formulation latente et sa régularisation influencent-elles la fidélité de restauration, la compacité de la représentation et le coût de l'inférence ?
+La question expérimentale est la suivante : comment la dimension du latent influence-t-elle la fidélité de restauration, la compacité de la représentation et le coût de l'inférence ?
 
 ### Périmètre
 
 | Niveau | Fonctionnalités |
 | --- | --- |
 | Socle cloud | Pipeline événementiel complet, API conteneurisée, persistance, dashboard, CI/CD, sécurité, observabilité et coûts. |
-| Socle ML | AE et VAE entraînés sur les mêmes données, restauration d'images documentaires, évaluation comparative et export ONNX. |
+| Socle ML | Un AE entraîné pour restaurer des images documentaires, évalué pour deux ou trois dimensions du latent, comparé à des baselines naïves et exporté en ONNX. |
 | Extension prioritaire | Compression neuronale réelle : quantification, fichier binaire décodable et comparaison aux codecs classiques. |
-| Extensions de recherche | Attention au bottleneck, variation de la dimension latente et de β, éventuellement Mamba. |
+| Extension reportée | Second modèle, un Variational Autoencoder (VAE), servi comme révision v2 de l'API pour le test A/B du sujet. Il n'est pas prévu pour l'instant. |
 | Bonus du sujet | Test A/B de révisions, test de charge, infrastructure as code (Bicep), selon le temps disponible. |
 
-La restauration est la fonctionnalité minimale du produit. La compression est une extension du produit et ne constitue pas à elle seule un bonus du barème. Les modèles ne doivent pas retarder la mise en place du socle cloud. Aucun PDF, OCR de production, service d'entraînement cloud ou système d'authentification utilisateur complet n'est prévu dans la première version.
+La restauration est la fonctionnalité minimale du produit. La compression est une extension du produit et ne constitue pas à elle seule un bonus du barème. Le modèle ne doit pas retarder la mise en place du socle cloud. Aucun PDF, OCR de production, service d'entraînement cloud ou système d'authentification utilisateur complet n'est prévu dans la première version.
 
 ## 2. Architecture Machine Learning
 
 ### Données
 
-Les modèles sont entraînés sur des couples `(image dégradée, image propre)` en niveaux de gris. Les documents propres proviennent de sources ouvertes dont la licence sera documentée, ou de documents synthétiques dont le texte et les mises en page sont générés localement.
+L'équipe entraîne l'AE sur des couples `(image dégradée, image propre)` en niveaux de gris. Les documents propres proviennent de sources ouvertes dont la licence sera documentée, ou de documents synthétiques dont le texte et les mises en page sont générés localement.
 
-Dégradations initiales : bruit numérique, flou léger et contraste variable. Les taches peuvent être ajoutées ensuite. Les transformations sont reproductibles et peuvent être générées à la volée. Le dataset doit rester inférieur ou égal à 50 Mo. La séparation entraînement/validation/test est réalisée par document source avant le découpage et les augmentations, afin d'éviter les fuites de données.
+Dégradations initiales : bruit numérique, flou léger et contraste variable. Les taches peuvent être ajoutées ensuite. Les transformations sont reproductibles et peuvent être générées à la volée. Le dataset peut dépasser 80 Mo. La séparation entraînement/validation/test est réalisée par document source avant le découpage et les augmentations, afin d'éviter les fuites de données.
 
 Hypothèse initiale : patches de 128 × 128 pixels, un canal, normalisés dans [0, 1]. L'API accepte des images de dimensions bornées, les découpe si nécessaire et réassemble les sorties. La taille maximale réellement acceptée sera fixée après mesure sur le CPU cible. Les pages haute résolution ne sont pas une exigence de la première version : il ne faut pas écraser une page entière en 128 × 128 au risque de rendre le texte illisible.
 
-### Architecture commune
+### Architecture du modèle
 
 ```mermaid
 flowchart TD
-    X[Image degradee] --> E[Encodeur commun : extraction et reduction spatiale]
-    E --> M[Bloc spatial interchangeable]
-    M --> AE[AE : projection deterministe]
-    M --> VAE[VAE : moyenne et log-variance]
-    VAE --> ZV[Reparametrisation pendant entrainement]
-    AE --> ZA[Latent AE]
-    ZA --> DA[Decodeur AE]
-    ZV --> DV[Decodeur VAE]
-    DA --> YA[Image restauree AE]
-    DV --> YV[Image restauree VAE]
-    ZA -.-> Q[Quantification et serialisation - extension]
-    ZV -.-> Q
+    X[Image degradee] --> E[Encodeur : extraction et reduction spatiale]
+    E --> Z[Latent]
+    Z --> D[Decodeur]
+    D --> Y[Image restauree]
+    Z -.-> Q[Quantification et serialisation - extension]
     Q -.-> F[Fichier binaire]
 ```
 
-Architecture de référence : un petit encodeur convolutionnel et un décodeur symétrique, avec un bottleneck explicite. L'AE et le VAE partagent le même design de backbone et de décodeur, mais leurs poids sont entraînés indépendamment. Pas de connexion de saut contournant le bottleneck dans la baseline, afin que le code latent puisse suffire à la reconstruction lors de l'extension compression.
+L'architecture de référence est un petit encodeur convolutionnel suivi d'un décodeur symétrique. Le bottleneck les sépare : c'est le point le plus étroit du réseau, où se trouve le latent. Aucune connexion de saut ne contourne le bottleneck. Le latent doit suffire à reconstruire l'image, parce que l'extension compression n'enregistre que lui.
 
-Pourquoi commencer par un CNN ? Les caractères, contours et bruits sont des structures locales ; un CNN léger fournit une référence simple à entraîner, exporter et mesurer sur CPU. Ce choix n'est pas une obligation du sujet. Un bloc d'attention à résolution réduite pourra ensuite exploiter un contexte plus large, à budget comparable. Mamba reste une piste facultative, conditionnée à un export et à une inférence CPU fiables.
+Le modèle est un CNN (réseau convolutionnel) parce que les caractères, les contours et le bruit sont des structures locales. Un CNN léger est simple à entraîner, à exporter et à mesurer sur CPU. Le sujet n'impose pas ce choix.
 
-- AE : `z = E(x_degrade)` ; `x_reconstruit = D(z)` ; objectif initial : MSE par rapport à l'image propre.
-- VAE : l'encodeur prédit `mu` et `logvar` ; `z = mu + exp(0.5 * logvar) * epsilon`, avec `epsilon ~ N(0, I)`. Objectif : reconstruction vers l'image propre + β × divergence KL vers `N(0, I)`, avec conventions de réduction documentées. C'est une variante débruitante du VAE.
-- En inférence, utiliser `z = mu` pour le VAE par défaut : les reconstructions sont déterministes et reproductibles, notamment lors des reprises du worker. L'échantillonnage reste disponible pour les expérimentations locales.
+L'encodeur `E` calcule le latent `z = E(x_degrade)`, puis le décodeur `D` reconstruit `x_reconstruit = D(z)`. L'objectif initial est l'erreur quadratique moyenne (MSE) entre `x_reconstruit` et l'image propre. L'inférence est déterministe : la même image donne la même sortie, y compris quand le worker relance un traitement.
 
 ### Évaluation
 
-Les deux modèles utilisent les mêmes splits, dégradations de test, dimensions latentes comparées et conventions de mesure. Les budgets de paramètres et de calcul sont documentés, pas supposés identiques.
+L'AE est entraîné une fois par dimension du latent comparée. Toutes ces variantes utilisent les mêmes splits, les mêmes dégradations de test et les mêmes conventions de mesure. L'équipe mesure et documente le nombre de paramètres et le coût de calcul de chaque variante.
 
 | Mesure | Usage |
 | --- | --- |
 | PSNR / SSIM | Qualité de restauration sur des images propres de référence. |
 | CER par OCR (facultatif) | Fidélité du texte, si une transcription de référence existe. |
-| Latence CPU | Inférence par modèle et temps complet par requête (pré/post-traitement inclus). |
+| Latence CPU | Inférence du modèle seul, puis temps complet par requête (pré/post-traitement inclus). |
 | Taille ONNX / mémoire | Compatibilité avec le déploiement Azure. |
 | Bits par pixel / taille réelle | Extension compression, métadonnées du fichier incluses. |
 
@@ -82,7 +70,7 @@ Baselines de restauration : image dégradée inchangée et filtre médian simple
 
 Extension compression : quantifier le latent (par exemple 8 bits, à valider), enregistrer un fichier binaire avec dimensions et version du modèle, le relire et reconstruire le document sans l'image originale. Comparer la taille réelle et la qualité de reconstruction à PNG, JPEG et WebP sur une même cible et une même résolution. Un latent plus petit ne suffit pas à démontrer une compression réelle. Le fichier est avec pertes ; l'original reste conservé. Aucun avantage sur les codecs classiques n'est présupposé.
 
-L'entraînement est local (PyTorch) ; seuls les modèles versionnés sont exportés en ONNX et exécutés sur Azure via ONNX Runtime CPU. Objectif : modèles légers, idéalement moins d'un million de paramètres chacun, à confirmer par les mesures.
+L'entraînement est local (PyTorch). Seul le modèle versionné est exporté en ONNX, puis ONNX Runtime l'exécute sur le CPU d'Azure. Le modèle peut compter plusieurs millions de paramètres, tant que le fichier ONNX reste sous 100 Mo et que l'inférence prend moins d'une seconde sur ce CPU.
 
 ## 3. Architecture cloud
 
@@ -95,11 +83,7 @@ flowchart TD
     D -->|Valide| Q[Storage Queue : inference-requests]
     Q --> W[Function : worker]
     W -->|Lecture du fichier| B
-    W -->|HTTPS POST /predict| A[Container Apps : FastAPI et ONNX Runtime]
-    A --> AE[AE versionne]
-    A --> VAE[VAE versionne]
-    AE -->|Resultat| A
-    VAE -->|Resultat| A
+    W -->|HTTPS POST /predict| A[Container Apps : FastAPI, ONNX Runtime et AE versionne]
     A -->|Reponse HTTP| W
     W -->|Fichiers et JSON| O[Blob Storage : output]
     W -->|Upsert metadonnees| C[Cosmos DB]
@@ -115,7 +99,7 @@ flowchart TD
     F -.-> I
 ```
 
-Les trois fonctions `dispatcher`, `worker` et `recent` résident dans une seule Function App Python 3.12 (Flex Consumption, 512 Mo). L'API et les modèles résident dans un conteneur distinct sur Azure Container Apps. Un seul environnement Container Apps est prévu.
+Les trois fonctions `dispatcher`, `worker` et `recent` résident dans une seule Function App Python 3.12 (Flex Consumption, 512 Mo). L'API et le modèle résident dans un conteneur distinct sur Azure Container Apps. Un seul environnement Container Apps est prévu.
 
 ### Pourquoi ces services ?
 
@@ -138,7 +122,7 @@ Les trois fonctions `dispatcher`, `worker` et `recent` résident dans une seule 
 1. L'utilisateur dépose une image PNG/JPEG dans `input/` via Azure CLI ou le portail (pas d'interface d'upload dédiée dans le socle).
 2. Event Grid déclenche le dispatcher. Celui-ci valide le document ; si invalide, il écrit le rejet et son motif dans `rejected/`.
 3. Le dispatcher place uniquement les métadonnées du fichier dans la file, pas l'image elle-même.
-4. Le worker consomme le message, lit le blob correspondant à son ETag et appelle `/predict` avec le modèle sélectionné.
+4. Le worker consomme le message, lit le blob correspondant à son ETag et appelle `/predict`.
 5. L'API prétraite l'image, effectue l'inférence ONNX, réassemble et encode le document restauré en PNG.
 6. Le worker écrit le PNG et un JSON de résultat dans `output/`, puis effectue un upsert des métadonnées dans Cosmos DB.
 7. Le dashboard interroge `/api/recent` toutes les 30 secondes et présente les nouveaux résultats.
@@ -148,7 +132,7 @@ Les trois fonctions `dispatcher`, `worker` et `recent` résident dans une seule 
 - La file peut délivrer un même message plusieurs fois. Utiliser une clé stable dérivée du nom du blob et de l'ETag, des chemins de sortie déterministes et un upsert Cosmos DB. Ne pas confondre une nouvelle version du même fichier avec un doublon.
 - Vérifier l'ETag lors de la lecture ; ne jamais traiter silencieusement une version plus récente sous l'identifiant d'une ancienne. Si le blob a changé, utiliser la version d'origine si disponible ou signaler l'échec.
 - Utiliser un client HTTP réutilisé et un timeout compatible avec le démarrage à froid. Ne confirmer le traitement qu'après persistance complète. Après cinq échecs (`maxDequeueCount = 5`), Azure Functions transfère le message dans la poison queue.
-- Le choix du modèle est fixé pour une demande donnée ; éviter les sorties aléatoires par défaut. Si l'on veut comparer les deux modèles en production, distinguer explicitement les résultats par modèle/version, sans dupliquer l'enregistrement du document.
+- L'inférence est déterministe : une reprise du worker produit le même résultat. Chaque résultat enregistre le modèle et sa version.
 - Identités managées pour les accès Azure, droits limités au nécessaire. OIDC pour GitHub Actions, aucun mot de passe, token ou fichier `local.settings.json` dans Git. L'accès de l'API d'inférence et des fichiers privés doit être protégé ; définir les permissions avec le pôle cloud avant l'exposition. La démonstration publique utilise uniquement des documents synthétiques ou librement diffusables.
 - CORS limité à l'origine du dashboard ; aucun accès direct à Cosmos DB depuis le navigateur. Le dashboard du socle expose les métadonnées, pas les blobs privés. La consultation des images se fait via un accès autorisé au stockage ; une prévisualisation web sécurisée pourra être ajoutée.
 
@@ -162,7 +146,7 @@ Ces contrats sont des propositions initiales à valider à J1–J2. Ils permette
 | --- | --- |
 | `GET /health` | État et temps de chargement du modèle ; sondes readiness/liveness. |
 | `GET /version` | Versions de l'API et des modèles. |
-| `POST /predict` | Restauration d'une image avec un AE ou un VAE. |
+| `POST /predict` | Restauration d'une image par l'AE. |
 | `GET /metrics` | Nombre d'appels et latence moyenne, au niveau du processus ; statistiques globales dans Application Insights. |
 
 Requête JSON (exemple schématique ; le champ base64 est abrégé) :
@@ -188,7 +172,7 @@ Réponse JSON (exemple fictif) :
 }
 ```
 
-`model` vaut `ae` ou `vae`. Le worker utilise `ae` par défaut pour le pipeline initial, choix configurable ; les deux modèles doivent être accessibles via l'API. Les comparaisons systématiques sont réalisées hors ligne ; un mode comparatif en production est une extension. L'image est transmise en base64 pour simplifier le contrat JSON/Pydantic ; limiter strictement sa taille. En cas de compression neuronale, une sortie binaire encodée en base64 pourra être ajoutée au contrat.
+`model` vaut `ae`, seule valeur acceptée pour l'instant. Le champ reste dans le contrat : un second modèle pourra s'ajouter sans changer le format. Le worker transmet l'image en base64 pour simplifier le contrat JSON/Pydantic, et l'API limite strictement sa taille. Si l'équipe réalise l'extension compression, une sortie binaire encodée en base64 s'ajoutera au contrat.
 
 Le modèle d'inférence ne connaît ni Azure Blob Storage ni Cosmos DB. Le worker est responsable de la persistance. L'API fictive de départ respecte le même contrat, mais renvoie l'image reçue, avec une version explicitement identifiée comme `mock`. Elle est ensuite remplacée par l'inférence réelle sans modifier la logique cloud.
 
@@ -203,13 +187,13 @@ Le modèle d'inférence ne connaît ni Azure Blob Storage ni Cosmos DB. Le worke
 }
 ```
 
-Le dispatcher publie le message ; le worker le consomme. Le modèle sélectionné peut être ajouté au message si nécessaire afin de stabiliser les reprises.
+Le dispatcher publie le message ; le worker le consomme.
 
 ### Persistance et dashboard
 
 Le résultat JSON complet référence les chemins des fichiers et contient les métadonnées. Cosmos DB conserve notamment l'identifiant, le nom du fichier, l'ETag, l'horodatage, le modèle et sa version, le statut, la taille des fichiers, la latence et les chemins de sortie. Aucun score de confiance artificiel n'est nécessaire pour une tâche de restauration ; les champs de prédiction sont adaptés à ce problème de reconstruction.
 
-Le dashboard affiche les 20 derniers traitements et au moins un graphique (par exemple la latence par modèle). Les métriques PSNR/SSIM sont réservées aux exemples disposant d'une référence propre. Le taux de compression neuronale est affiché uniquement quand un fichier binaire décodable existe.
+Le dashboard affiche les 20 derniers traitements et au moins un graphique (par exemple la latence des derniers traitements). Les métriques PSNR/SSIM sont réservées aux exemples disposant d'une référence propre. Le taux de compression neuronale est affiché uniquement quand un fichier binaire décodable existe.
 
 ## 5. Organisation du dépôt
 
@@ -218,7 +202,7 @@ Monorepo GitHub : `smartdoc-project/smartdoc`. Python 3.12 pour les trois compos
 ```text
 smartdoc/
 ├── model/                         # Membres 1 et 2
-│   ├── architectures/             # Encodeur, decodeur, AE, VAE
+│   ├── architectures/             # Encodeur, decodeur, AE
 │   ├── datasets/                  # Dataset et degradations
 │   ├── compression/               # Extension
 │   ├── train.py
@@ -251,32 +235,31 @@ Arborescence cible : les fichiers seront créés progressivement, ils ne sont pa
 
 Deux pôles, quatre personnes, 12 heures par personne (48 heures cumulées). Les intitulés désignent les responsabilités principales, pas une exclusivité sur le code. Chaque membre documente, teste et fait relire sa partie.
 
-### M1 Phil - ML Research & Architecture
+### M1 Phil - ML : modèle et évaluation
 
-Responsable de la conception scientifique des modèles.
+Responsable du modèle, de son entraînement et de son évaluation.
 
-- Concevoir l'architecture commune : encodeur, bottleneck, décodeur et interfaces de tenseurs.
-- Implémenter et entraîner le VAE : têtes moyenne/log-variance, reparamétrisation et objectif reconstruction + KL.
-- Définir avec le membre 2 les dimensions latentes, les hyperparamètres et les conditions de comparaison AE/VAE.
-- Exporter le VAE en ONNX et vérifier la parité avec PyTorch.
-- Analyser les résultats, notamment l'effet de la régularisation et de la dimension latente.
-- Si le socle est stable : implémenter la quantification et le codec latent, puis éventuellement tester l'attention. Mamba n'est pas un engagement initial.
+- Concevoir l'architecture de l'AE : encodeur, bottleneck, décodeur et formes des tenseurs.
+- Mesurer dès J1–J2 la latence d'un AE non entraîné, exporté en ONNX, dans un conteneur limité à 0,25 vCPU et 0,5 Gio. Cette mesure fixe la taille d'image que l'API accepte.
+- Entraîner l'AE avec le pipeline du membre 2, pour deux ou trois dimensions du latent.
+- Exporter l'AE en ONNX et vérifier que ONNX Runtime et PyTorch donnent la même sortie.
+- Comparer les résultats aux baselines et analyser l'effet de la dimension du latent.
+- Si le socle est stable : écrire la quantification et le codec du latent.
 
-Livrables : architecture commune utilisable par le membre 2, VAE entraîné/versionné, export ONNX, résultats expérimentaux et, si possible, prototype de compression.
+Livrables : AE entraîné et versionné, export ONNX, mesures de latence, résultats expérimentaux et, si possible, prototype de compression.
 
 ### M2 Ines - ML Engineering & API d'inférence
 
-Responsable des données, du modèle de référence et du service d'inférence.
+Responsable des données, du pipeline d'entraînement et du service d'inférence.
 
 - Constituer le dataset, les dégradations et les splits reproductibles.
 - Développer le pipeline d'entraînement et d'évaluation partagé avec le membre 1.
-- Implémenter, entraîner et exporter l'AE classique à partir de l'architecture commune.
 - Développer très tôt l'API fictive ; définir avec le membre 3 le contrat HTTP.
-- Intégrer les deux modèles ONNX, le prétraitement et le post-traitement dans FastAPI.
+- Intégrer le modèle ONNX, le prétraitement et le post-traitement dans FastAPI.
 - Implémenter les quatre routes, la validation Pydantic et les trois tests pytest minimum : succès, entrée invalide 422 et corps absent.
-- Mesurer la latence CPU et instrumenter l'API (avec le membre 4).
+- Mesurer la latence de la requête complète et instrumenter l'API (avec le membre 4).
 
-Livrables : dataset reproductible, AE versionné, scripts d'évaluation, API locale testée et intégration AE/VAE.
+Livrables : dataset reproductible, pipeline d'entraînement, scripts d'évaluation, API locale testée et instrumentée, modèle ONNX intégré.
 
 ### M3 Sidi - Cloud : backend distribué & dashboard
 
@@ -308,10 +291,10 @@ Livrables : infrastructure reproductible, API et Functions déployées, CI/CD fo
 
 | Composant | Responsable | Collaboration |
 | --- | --- | --- |
-| Architecture neuronale et VAE | M1 | M2 |
-| Dataset, AE et entraînement partagé | M2 | M1 |
+| Architecture et entraînement de l'AE | M1 | M2 (pipeline) |
+| Dataset et pipeline d'entraînement | M2 | M1 |
 | Protocole et analyse scientifique | M1 | M2 (scripts et mesures) |
-| Export ONNX | M1 (VAE), M2 (AE) | M1 + M2 |
+| Export ONNX | M1 | M2 (intégration API) |
 | Compression neuronale (extension) | M1 | M2 (intégration API) |
 | FastAPI et runtime d'inférence | M2 | M1 (interface modèle), M3 (contrat HTTP) |
 | Dockerfile et packaging | M4 | M2 (dépendances et runtime) |
@@ -326,8 +309,8 @@ Livrables : infrastructure reproductible, API et Functions déployées, CI/CD fo
 
 | Membre | Répartition proposée | Total |
 | --- | --- | --- |
-| M1 | Architecture 3 h ; VAE/entraînement 4 h ; export/évaluation 3 h ; intégration/documentation 2 h | 12 h |
-| M2 | Données/entraînement partagé 3 h ; AE/export 3 h ; API fictive puis réelle et tests 4 h ; intégration/documentation 2 h | 12 h |
+| M1 | Architecture et mesure de latence 3 h ; entraînement de l'AE 4 h ; export/évaluation 3 h ; intégration/documentation 2 h | 12 h |
+| M2 | Données et pipeline d'entraînement 4 h ; API fictive puis réelle et tests 4 h ; latence et instrumentation de l'API 2 h ; intégration/documentation 2 h | 12 h |
 | M3 | Dispatcher/worker 4 h ; persistance/reprises 3 h ; recent/dashboard 2 h ; tests et documentation 3 h | 12 h |
 | M4 | Région/provisioning/identités 3 h ; Docker/CI/CD 4 h ; observabilité/budget 3 h ; tests et documentation 2 h | 12 h |
 
@@ -335,19 +318,19 @@ Ces durées sont des estimations. Elles n'incluent pas de temps garanti pour les
 
 ## 7. Roadmap sur 15 jours
 
-| Période | M1 - Architecture/VAE | M2 - ML/API | M3 - Backend distribué | M4 - Infra/DevOps |
+| Période | M1 - Modèle | M2 - Données/API | M3 - Backend distribué | M4 - Infra/DevOps |
 | --- | --- | --- | --- | --- |
-| J1–J2 | Définir le backbone et les interfaces latentes | Contrat API, API fictive, données | Contrat API, schéma de file et Functions locales | Abonnement, région, quotas, budget et ressources de base |
-| J3–J6 | VAE et entraînement | AE, pipeline partagé, tests API | Dispatcher, queue, worker et persistance | Docker, Container Apps et premier déploiement |
-| J7–J10 | Évaluation du VAE et export ONNX | Export AE, intégration des deux modèles | recent, dashboard, reprises | CI/CD, OIDC, permissions, télémétrie |
-| J11–J13 | Analyse comparative, compression uniquement si possible | Tests ONNX/API et latence | Idempotence, rejet et poison queue | Alerte, KQL, scale-to-zero et coût |
+| J1–J2 | Architecture de l'AE, latence d'un ONNX non entraîné | Contrat API, API fictive, données | Contrat API, schéma de file et Functions locales | Abonnement, région, quotas, budget et ressources de base |
+| J3–J6 | Entraînement de l'AE | Pipeline d'entraînement, tests API | Dispatcher, queue, worker et persistance | Docker, Container Apps et premier déploiement |
+| J7–J10 | Évaluation de l'AE et export ONNX | Intégration du modèle ONNX dans l'API | recent, dashboard, reprises | CI/CD, OIDC, permissions, télémétrie |
+| J11–J13 | Analyse des dimensions du latent, compression uniquement si possible | Tests ONNX/API, latence et instrumentation | Idempotence, rejet et poison queue | Alerte, KQL, scale-to-zero et coût |
 | J14–J15 | Résultats et documentation | Documentation ML/API | Démo et preuves pipeline | Rapport de coûts, démo de déploiement |
 
 Jalons communs :
 
 - **J2 :** contrats ML/API et messages de file fixés, région Azure validée, API fictive locale.
 - **J6 :** premier pipeline de bout en bout sur Azure avec API fictive ; les entraînements continuent en parallèle.
-- **J10 :** AE et VAE accessibles en production via l'API, dashboard opérationnel, CI/CD fonctionnelle.
+- **J10 :** AE accessible en production via l'API, dashboard opérationnel, CI/CD fonctionnelle.
 - **J13 :** scénarios d'erreur, monitoring et contraintes de performance vérifiés ; extensions seulement si le socle est complet.
 - **J15 :** livrables et soutenance prêts. Nettoyage Azure après la soutenance, au plus tard selon le délai du sujet.
 
@@ -357,9 +340,9 @@ Jalons communs :
 | --- | --- |
 | Équipe et durée | 4 personnes, 12 h par personne sur 15 jours |
 | Budget Azure | 25 $ maximum ; estimation du sujet : environ 0–3 $, à vérifier |
-| Dataset | 50 Mo maximum, licence documentée |
+| Dataset | Plus de 80 Mo possible, licence documentée |
 | Modèle | Moins de 100 Mo, version sémantique |
-| Inférence CPU | Moins de 1 seconde ; mesurer par modèle et sur la requête complète |
+| Inférence CPU | Moins de 1 seconde ; mesurer le modèle seul et la requête complète |
 | Image Docker | Moins de 500 Mo, multi-étapes, non-root, HEALTHCHECK |
 | Container Apps | 0,25 vCPU, 0,5 Gio, 0 à 2 réplicas |
 | Function App | Flex Consumption, Python 3.12, 512 Mo |
