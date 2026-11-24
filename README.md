@@ -278,7 +278,7 @@ Responsable des données, du modèle de référence et du service d'inférence.
 
 Livrables : dataset reproductible, AE versionné, scripts d'évaluation, API locale testée et intégration AE/VAE.
 
-### M3+M4 Sidi+Patrick - Cloud : backend distribué & dashboard
+### M3 Sidi - Cloud : backend distribué & dashboard
 
 Responsable de la logique métier événementielle, sans gérer le provisioning Azure seul.
 
@@ -291,7 +291,7 @@ Responsable de la logique métier événementielle, sans gérer le provisioning 
 
 Livrables : pipeline événementiel fonctionnel, dashboard, preuves des scénarios de fiabilité.
 
-### M3+M4 Sidi+Patrick - Cloud : infrastructure, DevOps & observabilité
+### M4 Patrick - Cloud : infrastructure, DevOps & observabilité
 
 Responsable du déploiement, de la sécurité et de l'exploitation des services.
 
