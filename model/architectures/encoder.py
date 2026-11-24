@@ -29,4 +29,3 @@ class Encoder(nn.Module):
             x = self.activation(conv(x))
         x = x.flatten(start_dim=1)  # (B,128,8,8) -> (B,8192)
         return self.projection(x)
-    
