@@ -15,8 +15,10 @@ MOTS = ["facture", "client", "montant", "total", "date", "contrat", "prix", "TVA
         "paiement", "adresse", "commande", "livraison", "service", "dossier"]
 LARGEUR, HAUTEUR, MARGE, INTERLIGNE = 640, 896, 50, 20
 LARGEUR_UTILE = LARGEUR - 2 * MARGE
-police = ImageFont.truetype("C:/Windows/Fonts/times.ttf", 14)
-police_titre = ImageFont.truetype("C:/Windows/Fonts/timesbd.ttf", 20)
+# TeX Gyre Termes: free Times clone (GUST Font License), shipped in the repo so every OS renders the same pages.
+POLICES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+police = ImageFont.truetype(os.path.join(POLICES, "texgyretermes-regular.otf"), 14)
+police_titre = ImageFont.truetype(os.path.join(POLICES, "texgyretermes-bold.otf"), 20)
 
 def abimer(page):
     page = page.filter(ImageFilter.GaussianBlur(random.uniform(0.3, 1.2)))  
